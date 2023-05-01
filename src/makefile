@@ -1,9 +1,6 @@
 #  Abraham Berlin
 # CSE308 Project 1
 
-
-
-
 BITS = 64
 
 # Output directory
@@ -12,8 +9,8 @@ tmp  := $(shell mkdir -p $(ODIR))
 
 # Basic compiler configuration and flags
 CXX      = g++
-CXXFLAGS = -MMD -ggdb -std=c++20 -m$(BITS)
-LDFLAGS	 = -m$(BITS) -lpthread -lrt
+CXXFLAGS = -MMD -O3 -ggdb -std=c++20 -m$(BITS)
+LDFLAGS	 = -m$(BITS) -lpthread -lrt -fopenmp
 
 # The basenames of the c++ files that this program uses
 CXXFILES = p1

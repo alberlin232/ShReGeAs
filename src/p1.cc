@@ -6,6 +6,10 @@
 #include <cmath>
 #include <unistd.h>
 #include <vector>
+#include <chrono>
+#include <tuple>
+#include <atomic>
+#include <mutex>
 
 
 using namespace std;
@@ -13,12 +17,23 @@ using namespace std;
 struct degree {
     int in;
     int out;
+
+    degree(int in, int out) : in(in), out(out) {}
   };
 
-  unordered_map<int, unordered_map<int, vector<int>>> node_map = {};
-  unordered_map<int, degree> degree_map = {};
-  unordered_map<int, int> used_edges = {};
+struct edge_node {
+  int e;
+  std::atomic<bool> used;
 
+  edge_node(int e) : e(e) {
+    used.store(false);
+  }
+};
+
+  unordered_map<int, unordered_map<int, vector<edge_node *>>> node_map = {};
+  unordered_map<int, degree *> degree_map = {};
+  int map_size = 0;
+  int count_idx = 0;
 
 /// arg_t represents the command-line arguments to the server
 struct arg_t {
@@ -146,102 +161,39 @@ string getRead(int val) {
 
 void insert(int pre, int suf, int edge) {
   if (!node_map.contains(pre)){
-    node_map.insert({pre, unordered_map<int, vector<int>>()});
-    node_map.at(pre).insert({suf, vector<int>()});
+    node_map.insert({pre, unordered_map<int, vector<edge_node *>>()});
+    node_map.at(pre).insert({suf, vector<edge_node *>()});
   } else {
     if(!node_map.at(pre).contains(suf)) {
-      node_map.at(pre).insert({suf, vector<int>()});
+      node_map.at(pre).insert({suf, vector<edge_node *>()});
     }
   }
-  node_map.at(pre).at(suf).push_back(edge);
+  node_map.at(pre).at(suf).push_back(new edge_node(edge));
 
   if (!degree_map.contains(pre)) {
-    degree_map.insert({pre,{0,1}});
+    degree_map.insert({pre, new degree(0,1)});
   } else{
-    degree_map.at(pre).out += 1;
+    degree_map.at(pre)->out += 1;
   }
   if (!degree_map.contains(suf)) {
-    degree_map.insert({suf,{1,0}});
+    degree_map.insert({suf, new degree(1,0)});
   } else{
-    degree_map.at(suf).in += 1;
+    degree_map.at(suf)->in += 1;
   }
 }
 
-string flatten_vector(vector<int> v) {
+string flatten_vector(int *v) {
   string s;
-  for (auto i = v.begin(); i != v.end(); i++) {
-    s.append(getRead(*i));
+  for (auto i = 0; i < 50; i++) {
+    if (v[i] == 0) break;
+    s.append(getRead(v[i]));
   }
   return s;
 }
 
-vector<vector<int>> cycle() {
-
-  vector<vector<int>> cycles;
-
-  while(true){
-
-    //initialize path
-    int pre = -1;
-    bool end = false;
-    unordered_map<int, int> used;
-    vector<int> cycle;
-
-    // find node where out > in
-    for (auto i = degree_map.begin(); i != degree_map.end(); i++) {
-      if (i->second.out > i->second.in){
-        pre = i->first;
-        cycle.push_back(pre);
-        used.insert({pre, 1});
-        break;
-      }
-    }
-
-    // if no start node found return empty vector
-    if (pre == -1) break;
-
-
-    while(true) {
-
-      if (degree_map.at(pre).out == 0) break;
-
-      end = false;
-
-      // iterate though 2nd map
-      for (auto i = node_map.at(pre).begin(); i != node_map.at(pre).end(); i++) {
-          //iterate though edges
-          for (auto j = i->second.begin(); j != i->second.end(); j++) {
-            if (!used_edges.contains(*j)) {
-              used_edges.insert({*j, 1});
-              degree_map.at(pre).out -= 1;
-              degree_map.at(i->first).in -= 1;
-              pre = i->first;
-              if (!used.contains(pre)) {
-                used.insert({pre, 1});
-                cycle.push_back(pre);
-              }
-              end = true;
-              break;
-            }
-          }
-          if (end) break;
-      }
-    }
-
-    cycles.push_back(cycle);
-
-  }
-  return cycles;
-}
-
-
-unordered_map<string, int> path(){
-  
-  vector<vector<int>> paths;
-  unordered_map<string, int> paths_map;
-
-  while(true){
-
+void faps(int ***paths, bool **used, std::mutex **mtx) {
+  int idx = 0;
+  while(true) {
     //initialize path
     int pre = -1;
     bool end = false;
@@ -249,7 +201,9 @@ unordered_map<string, int> path(){
 
     // find node where out > in
     for (auto i = degree_map.begin(); i != degree_map.end(); i++) {
-      if (i->second.out > i->second.in){
+      bool expected = false;
+      bool desired = true;
+      if (i->second->out > i->second->in){
         pre = i->first;
         path.push_back(pre);
         break;
@@ -260,20 +214,17 @@ unordered_map<string, int> path(){
     if (pre == -1) break;
 
 
-    while(true) {
-
-      if (degree_map.at(pre).out == 0) break;
-
+    while(degree_map.at(pre)->out) {
       end = false;
-
       // iterate though 2nd map
       for (auto i = node_map.at(pre).begin(); i != node_map.at(pre).end(); i++) {
           //iterate though edges
           for (auto j = i->second.begin(); j != i->second.end(); j++) {
-            if (!used_edges.contains(*j)) {
-              used_edges.insert({*j, 1});
-              degree_map.at(pre).out -= 1;
-              degree_map.at(i->first).in -= 1;
+            bool expected = false;
+            bool desired = true;
+            if ((*j)->used.compare_exchange_strong(expected, desired)) {
+              degree_map.at(pre)->out -= 1;
+              degree_map.at(i->first)->in -= 1;
               pre = i->first;
               path.push_back(pre);
               end = true;
@@ -286,70 +237,80 @@ unordered_map<string, int> path(){
 
     bool overlap = false;
     // need to check if path overlaps with anything
-    for (auto i = paths.begin(); i != paths.end(); i++) {
-      for (auto j = i->begin(); j != i->end(); j++) {
+    // cout << sizeof(*paths) << endl;
+    for (auto i = 0; i < map_size; i++) {
+      for (auto j = 0; j < 50; j++) {
         for (auto k = path.begin(); k != path.end(); k++) {
-          if (*j == *k) {
+          if   ((*paths)[i][j] == *k) {
             vector<int> new_path;
             // conbine the longest part of both paths
-            if (j - i->begin() >= k - path.begin()) {
-              new_path.insert(new_path.end(), i->begin(), j);
+            // (*mtx)[i].lock();
+            if (j - i >= k - path.begin()) {
+              new_path.insert(new_path.end(), 0, j);
             } else {
               new_path.insert(new_path.end(), path.begin(), k);
             }
-            if (i->size() - (j - i->begin()) >= path.size() - (k - path.begin())) {
-              new_path.insert(new_path.end(), j, i->end());
+            if (sizeof(paths[i]) / sizeof(paths[i][0]) - (j) >= path.size() - (k - path.begin())) {
+              new_path.insert(new_path.end(), j, sizeof(paths[i]) / sizeof(paths[i][0]));
             } else {
               new_path.insert(new_path.end(), k, path.end());
             }
             // remove the old path
-            paths.erase(i);
-            // add the new path
-            paths.push_back(new_path);
+            (*used)[i] = true;
+            //turn new_paths into an array
+            for (auto l = 0; l < new_path.size(); l++) {
+              (*paths)[idx][l] = new_path.at(l);
+            }
+            idx++;
+            // (*mtx)[i].unlock();
             overlap = true;
             break;
           }
         }
         if (overlap) break;
       }
-      if (overlap) break;
     }
-    if (!overlap)
-      paths.push_back(path);
-
+    if (!overlap) {
+      //add new_path to paths
+      for (auto l = 0; l < path.size(); l++) {
+        (*paths)[idx][l] = path.at(l);
+      }
+      idx++;
+    }
   }
 
-  vector<vector<int>> cycles = cycle();
-  bool no_cycle = false;
-  if (cycles.size() == 0) no_cycle = true;
-  for (auto i = paths.begin(); i != paths.end(); i++) {
-    string s;
-    if (!no_cycle) {
-      vector<int> new_path;
-      bool STOP_THE_COUNT = false;
-      for (auto j = cycles.begin(); j != cycles.end(); j++) {
-        for (auto k = i->begin(); k != i->end(); k++) {
-          for (auto l = j->begin(); l != j->end(); l++) {
-            if (*k == *l) {
-              // insert the cycles into the path at the point of intersect
-              new_path.insert(new_path.end(), i->begin(), k);
-              // insert the cycle from the point of intersect to the end and around
-              new_path.insert(new_path.end(), l, j->end());
-              new_path.insert(new_path.end(), j->begin(), l);
-              // insert the rest of the path
-              new_path.insert(new_path.end(), k, i->end());
-              STOP_THE_COUNT = true;
-              break;
-            }
-          }
-          if (STOP_THE_COUNT) break;
-        }
-        if (STOP_THE_COUNT) break;
-      }
-      s = flatten_vector(new_path);
-    } else {
-      s = flatten_vector(*i);
-    }
+}
+
+unordered_map<string, int> path(){
+  
+  // vector<vector<int>> *paths = new vector<vector<int>>(map_size);
+  // malloc 2d array pahts with size 50 by map_size
+  int **paths = (int **)calloc(map_size, sizeof(int *));
+  for (auto i = 0; i < map_size; i++) {
+    paths[i] = (int *)calloc(50, sizeof(int));
+  }
+
+  // vector<std::mutex> *locks = new vector<std::mutex>(map_size);
+  std::mutex *locks = new std::mutex[map_size];
+  // vector<bool> *used = new vector<bool>(map_size);
+  bool *used = new bool[map_size];
+  unordered_map<string, int> paths_map;
+
+  //deploy threads that run faps
+  // vector<thread> threads = vector<thread>(1);
+  // for (int i = 0; i < 8; i++) {
+  //   threads[i] = thread([&]() {
+  //     faps(&paths, &used, &locks);
+  //   });
+  // }
+  // for (int i = 0; i < 8; i++) {
+  //   threads[i].join();
+  // }
+
+  faps(&paths, &used, &locks);
+  
+  for (auto i = 0; i < map_size; i++) {
+    string s = flatten_vector(paths[i]);
     if (!paths_map.contains(s))
       paths_map.insert({s, 1});
   }
@@ -442,6 +403,7 @@ void read_file(const std::string &filename) {
       int suf = getSufixIndex(line);
 
       insert(pre, suf, i++);
+      map_size++;
 
   }
   fclose(fp);
@@ -453,7 +415,7 @@ void read_file(const std::string &filename) {
 void printer() {
   cout << "---- MAP ----" << endl;
   for (auto i = node_map.begin(); i != node_map.end(); i++) {
-    cout << getRead(i->first) <<  " - [" << degree_map.at(i->first).in << ", " << degree_map.at(i->first).out << "]" <<endl;
+    cout << getRead(i->first) <<  " - [" << degree_map.at(i->first)->in << ", " << degree_map.at(i->first)->out << "]" <<endl;
     for (auto j = i->second.begin(); j != i->second.end(); j++){
       cout << "  " << getRead(j->first) << " - [" << j->second.size() << "]" << endl;
     }
@@ -475,18 +437,28 @@ int main(int argc, char **argv) {
   }
 
 
+  auto start = std::chrono::high_resolution_clock::now();
   //read and insert nodes into node_map
   read_file(args->filename);
+  auto end = std::chrono::high_resolution_clock::now();
+
+  std::chrono::duration<double> elapsed = end - start;
+  std::cout << "Read File: " << elapsed.count() << std::endl;
 
   
 
+  start = std::chrono::high_resolution_clock::now();
   unordered_map<string, int> paths = path();
+  end = std::chrono::high_resolution_clock::now();
+  elapsed = end - start;
+  std::cout << "Path: " << elapsed.count() << std::endl;
+
   int old_size = paths.size();
   int iters = 0;
   int tolerance = 1;
+
+  start = std::chrono::high_resolution_clock::now();
   while (true) {
-    cout << "Iteration: " << iters++ << endl;
-    cout << "Paths: " << paths.size() << endl;
     paths = find_overlap(paths);
     if (paths.size() == old_size) 
       tolerance--;
@@ -494,6 +466,9 @@ int main(int argc, char **argv) {
       break;
     old_size = paths.size();
   }
+  end = std::chrono::high_resolution_clock::now();
+  elapsed = end - start;
+  std::cout << "Overlap: " << elapsed.count() << std::endl;
   
   
   int counter = 1;
